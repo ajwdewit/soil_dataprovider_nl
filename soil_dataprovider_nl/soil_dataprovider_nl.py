@@ -15,6 +15,14 @@ class SoilDataProviderNL_CWB(dict):
     with the PCSE classic waterbalance.
     """
     bofek_soil_source = Path(r"C:\data\NoBackup\bodemkaartNL\bofek_soil_nl.ddb")
+    param_units = {"SWM": "[-]",
+                   "SMFCF": "[-]",
+                   "SM0": "[-]",
+                   "CRAIRC": "[-]",
+                   "RDMSOL": "[cm]",
+                   "SOPE": "[cm day-1]",
+                   "KSUB": "[cm day-1]",
+                   }
 
     def __init__(self, xcoord=None, ycoord=None, max_root_depth=1E6):
         super().__init__()
@@ -216,5 +224,8 @@ class SoilDataProviderNL_CWB(dict):
                                                                          "SMFCF", "SM0"],
                                                    max_rows=5)
         msg += (s + "\n")
-        msg += f"Actual CWB parameter values: {repr(self)}"
+        msg += f"Actual CWB parameter values:\n"
+        for name, value in self.items():
+            unit = self.param_units[name]
+            msg += f"- {name}: {value:.3f} {unit}\n"
         return msg
