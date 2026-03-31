@@ -1,6 +1,12 @@
+import urllib.request
 from pathlib import Path
+import tempfile
+
+from sqlalchemy import lateral
+
 this_dir = Path(__file__).parent
 top_dir = this_dir.parent.absolute()
+tmp_dir = Path(tempfile.gettempdir())
 
 import pandas as pd
 pd.options.mode.chained_assignment = None
@@ -8,13 +14,45 @@ import matplotlib.pyplot as plt
 import duckdb
 import numpy as np
 
+from .coords import CoordinateStore
 from .mualemvangenuchten import MualemvanGenugten, get_water_content_from_MvG, get_conductivity_from_MvG
+
+
+class DuckBDconnector:
+    bofek_soil_source = "https://github.com/ajwdewit/collections/raw/refs/heads/main/BodemkaartNL/bofek_soil_nl.ddb"
+    bofek_soil_cache = tmp_dir / "bofek_soil_nl.ddb"
+
+    def __init__(self, cache_soildb=False):
+        self._cache_soildb = cache_soildb
+        if self._cache_soildb:
+            if not self.bofek_soil_cache.exists():
+                print("Downloading Soil DB (~135 Mb)...")
+                # Source - https://stackoverflow.com/a/45805923
+                # Posted by Xantium, modified by community. See post 'Timeline' for change history
+                # Retrieved 2026-03-31, License - CC BY-SA 3.0
+                urllib.request.urlretrieve(self.bofek_soil_source, self.bofek_soil_cache)
+
+        self.connection = None
+
+    def __enter__(self):
+
+        soildb = self.bofek_soil_cache if self._cache_soildb else self.bofek_soil_source
+        sql1 = "install spatial; load spatial; install httpfs; load httpfs;"
+        sql2 = f"attach '{soildb}' as soildb (READONLY)"
+        self.connection = duckdb.connect()
+        self.connection.sql(sql1)
+        self.connection.sql(sql2)
+        return self.connection
+
+    def __exit__(self, exc_type, exc_value, exc_traceback):
+
+        self.connection.close()
+
 
 class SoilDataProviderNL_CWB(dict):
     """A SoilDataProvider that retrieves soil parameters from the Dutch BOFEK soil database for use
     with the PCSE classic waterbalance.
     """
-    bofek_soil_source = Path(r"C:\data\NoBackup\bodemkaartNL\bofek_soil_nl.ddb")
     param_units = {"SWM": "[-]",
                    "SMFCF": "[-]",
                    "SM0": "[-]",
@@ -24,16 +62,16 @@ class SoilDataProviderNL_CWB(dict):
                    "KSUB": "[cm day-1]",
                    }
 
-    def __init__(self, xcoord=None, ycoord=None, max_root_depth=1E6):
+    def __init__(self, xcoord=None, ycoord=None, max_root_depth=1E6, cache_soildb=False):
         super().__init__()
-        self.xcoord = self._valid_xcoord_rd(xcoord)
-        self.ycoord = self._valid_ycoord_rd(ycoord)
-        self.DBconn = self._connect_soil_db()
-        self.soil_profile = self._find_soil_profile()
 
-        profile_characteristics = self._find_profile_characteristics(self.soil_profile)
+        self.crds = CoordinateStore(xcoord, ycoord)
+        with DuckBDconnector(cache_soildb=cache_soildb) as DBconn:
+            self.soil_profile = self._find_soil_profile(DBconn)
+            profile_characteristics = self._find_profile_characteristics(DBconn, self.soil_profile)
+
         # self._compute_pF_curves(self.profile_characteristics)
-        self.profile_characteristics = self._compute_WC_at_referencepoints(profile_characteristics)
+        self.profile_characteristics = self._compute_water_content_at_referencepoints(profile_characteristics)
         self.rootable_depth, self._root_depth_limit_forced = self._determine_rootable_depth(max_root_depth)
         self._compute_CWB_volumetric_parameters()
         self._compute_CWB_conductivity_parameters()
@@ -114,7 +152,7 @@ class SoilDataProviderNL_CWB(dict):
         cond = get_conductivity_from_MvG(H, p_mvg)
         self.update(dict(SOPE=cond, KSUB=cond))
 
-    def _compute_WC_at_referencepoints(self, profile_characteristics):
+    def _compute_water_content_at_referencepoints(self, profile_characteristics):
         """Computes the water content at saturation, field capacity and wilting point based on the profile
         characteristics and the Mualem van Genugten parameters.
 
@@ -131,8 +169,8 @@ class SoilDataProviderNL_CWB(dict):
                                       lamda=layer.lexp, ksat=layer.ksatfit)
             water_content = get_water_content_from_MvG(H, p_mvg)
             layer_ref_points.append(dict(zip(ref_point_names, water_content)))
-        df_WC = pd.DataFrame.from_dict(layer_ref_points)
-        profile_characteristics = pd.concat([profile_characteristics, df_WC], axis=1)
+        df_water_content = pd.DataFrame.from_dict(layer_ref_points)
+        profile_characteristics = pd.concat([profile_characteristics, df_water_content], axis=1)
 
         return profile_characteristics
 
@@ -150,45 +188,20 @@ class SoilDataProviderNL_CWB(dict):
         else:
             return rootable_depth, False
 
-    @staticmethod
-    def _valid_xcoord_rd(xcoord):
-
-        if 7000 < xcoord < 289000:
-            return xcoord
-        else:
-            raise ValueError(f"Xcoord {xcoord} not a valid value for Dutch the RD system")
-
-    @staticmethod
-    def _valid_ycoord_rd(ycoord):
-
-        if 289000 < ycoord < 629000:
-            return ycoord
-        else:
-            raise ValueError(f"Ycoord {ycoord} not a valid value for Dutch the RD system")
-
-    def _connect_soil_db(self):
-
-        sql1 = f"attach '{self.bofek_soil_source}' as soildb (READONLY)"
-        sql2 = "install spatial; load spatial"
-        connect = duckdb.connect()
-        connect.sql(sql1)
-        connect.sql(sql2)
-        return connect
-
-    def _find_soil_profile(self):
+    def _find_soil_profile(self, DBconn):
         sql = """SELECT profile_code FROM soildb.bofek_soil_nl t1
                  WHERE ST_intersects(t1.geom, ST_Point(?, ?))
               """
 
-        cursor = self.DBconn.execute(sql, (self.xcoord, self.ycoord))
+        cursor = DBconn.execute(sql, (self.crds.xcoord, self.crds.ycoord))
         row = cursor.fetchone()
         if not row:
-            msg = f"No valid soil profile found for this location: (X:{self.xcoord}, Y:{self.ycoord})!"
+            msg = f"No valid soil profile found for this location: (X:{self.crds.xcoord}, Y:{self.crds.ycoord})!"
             raise RuntimeError(msg)
 
         return row[0]
 
-    def _find_profile_characteristics(self, profile_code):
+    def _find_profile_characteristics(self, DBconn, profile_code):
         """Reads the soil profile characteristics from the database
 
         :param profile_code: the profile code
@@ -204,7 +217,7 @@ class SoilDataProviderNL_CWB(dict):
                 ORDER BY
                    t1.idlayer
             """
-        df = self.DBconn.execute(sql, (profile_code,)).df()
+        df = DBconn.execute(sql, (profile_code,)).df()
         if len(df) == 0:
             msg = f"No valid soil profile description found for this soil profile code: {profile_code})!"
             raise RuntimeError(msg)
@@ -214,7 +227,7 @@ class SoilDataProviderNL_CWB(dict):
         return df
 
     def __str__(self):
-        msg = f"Soil properties for location at X/Y: {self.xcoord}/{self.ycoord}\n"
+        msg = f"Soil properties for location at X/Y: {self.crds.xcoord}/{self.crds.ycoord}\n"
         if self._root_depth_limit_forced:
             msg += f"Soil rootable depth estimated at {self.rootable_depth} (forced by `max_root_depth` parameter)\n"
         else:
