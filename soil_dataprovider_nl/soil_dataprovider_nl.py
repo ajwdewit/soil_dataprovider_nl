@@ -1,12 +1,9 @@
+# -*- coding: utf-8 -*-
+# Copyright (c) 2026 Wageningen Environmental Research, Wageningen-UR
+# Allard de Wit (allard.dewit@wur.nl), April 2026
 import urllib.request
 from pathlib import Path
 import tempfile
-
-from sqlalchemy import lateral
-
-this_dir = Path(__file__).parent
-top_dir = this_dir.parent.absolute()
-tmp_dir = Path(tempfile.gettempdir())
 
 import pandas as pd
 pd.options.mode.chained_assignment = None
@@ -15,10 +12,14 @@ import duckdb
 import numpy as np
 
 from .coords import CoordinateStore
-from .mualemvangenuchten import MualemvanGenugten, get_water_content_from_MvG, get_conductivity_from_MvG
+from .mualemvangenuchten import MualemvanGenuchten, get_water_content_from_MvG, get_conductivity_from_MvG
+
+this_dir = Path(__file__).parent
+top_dir = this_dir.parent.absolute()
+tmp_dir = Path(tempfile.gettempdir())
 
 
-class DuckBDconnector:
+class SoilBDconnector:
     bofek_soil_source = "https://github.com/ajwdewit/collections/raw/refs/heads/main/BodemkaartNL/bofek_soil_nl.ddb"
     bofek_soil_cache = tmp_dir / "bofek_soil_nl.ddb"
 
@@ -27,9 +28,6 @@ class DuckBDconnector:
         if self._cache_soildb:
             if not self.bofek_soil_cache.exists():
                 print("Downloading Soil DB (~135 Mb)...")
-                # Source - https://stackoverflow.com/a/45805923
-                # Posted by Xantium, modified by community. See post 'Timeline' for change history
-                # Retrieved 2026-03-31, License - CC BY-SA 3.0
                 urllib.request.urlretrieve(self.bofek_soil_source, self.bofek_soil_cache)
 
         self.connection = None
@@ -52,8 +50,27 @@ class DuckBDconnector:
 class SoilDataProviderNL_CWB(dict):
     """A SoilDataProvider that retrieves soil parameters from the Dutch BOFEK soil database for use
     with the PCSE classic waterbalance.
+
+    :param xcoord: the X coordinate. Either in Dutch RD coordinates or as longitude
+    :param ycoord: the Y coordinates. Either in Dutch RD coordinates or as latitude
+    :param max_root_depth: user defined rootable depth in cm, otherwise the whole soil is assumed rootable.
+    :param cache_soildb: set to True to download the soil database file and store a local cached copy of it.
+
+    Since the classic water balance uses a single soil layer, the soil parameters for each layer
+    have to be aggregated. The following assumptions have been made:
+    - SMW is calculated from a layer-weighted average of the wilting point, the latter is assumed at pF=4.2
+    - SMFCF is computed by calculating the water holding capacity for all layers. The latter is defined as the amount
+      of volume between wilting point (SMW) and field capacity (pF=2) for each layer. The SMFCF is than calculated
+      as the value with an equivalent water holding capacity given the soil rootable depth (RDMSOL).
+    - SM0 is computed as the value required to store an equivalent volume of water given the rootable depth.
+    - SOPE/KSUB are computed as the conductivity of the bottom layer at pF=1. There is no physical basis for this
+      but since the water balance starts draining water when the water content is above field capacity we just
+      take pF=1 as representative for that proces.
+    - RDMSOL is derived from the maximum soil depth or from the user-defined max_root_depth. The smallest of the
+      two values is taken.
     """
-    param_units = {"SWM": "[-]",
+    non_soil_codes = {99980, 99990, 99991}
+    param_units = {"SMW": "[-]",
                    "SMFCF": "[-]",
                    "SM0": "[-]",
                    "CRAIRC": "[-]",
@@ -62,11 +79,11 @@ class SoilDataProviderNL_CWB(dict):
                    "KSUB": "[cm day-1]",
                    }
 
-    def __init__(self, xcoord=None, ycoord=None, max_root_depth=1E6, cache_soildb=False):
+    def __init__(self, *, xcoord=None, ycoord=None, max_root_depth=1E6, cache_soildb=False):
         super().__init__()
 
         self.crds = CoordinateStore(xcoord, ycoord)
-        with DuckBDconnector(cache_soildb=cache_soildb) as DBconn:
+        with SoilBDconnector(cache_soildb=cache_soildb) as DBconn:
             self.soil_profile = self._find_soil_profile(DBconn)
             profile_characteristics = self._find_profile_characteristics(DBconn, self.soil_profile)
 
@@ -81,8 +98,8 @@ class SoilDataProviderNL_CWB(dict):
         H = 10**pF_range
         fig, axes = plt.subplots(ncols=2, figsize=(10,5))
         for row in profile_characteristics.itertuples():
-            p_mvg = MualemvanGenugten(wcr=row.ores, wcs=row.osat, alpha=row.alfa, npar=row.npar,
-                                      lamda=row.lexp, ksat=row.ksatfit)
+            p_mvg = MualemvanGenuchten(wcr=row.ores, wcs=row.osat, alpha=row.alfa, npar=row.npar,
+                                       lamda=row.lexp, ksat=row.ksatfit)
             pF_WC = get_water_content_from_MvG(H, p_mvg)
             pF_Cond = get_conductivity_from_MvG(H, p_mvg)
             label = f"layer {row.layer_top}-{row.layer_bottom}"
@@ -113,7 +130,7 @@ class SoilDataProviderNL_CWB(dict):
         # Recompute layer thickness as bottom layer may be bounded by rootable depth.
         df["thickness"] = df.layer_bottom - df.layer_top
 
-        # wilting point as layer-weighted values
+        # wilting point as layer-weighted value
         SMW = (df.SMW * df.thickness).sum() / df.thickness.sum()
         # compute total water holding capacity (AWC) for all layers
         AWC = ((df.SMFCF - df.SMW) * df.thickness).sum()
@@ -126,7 +143,7 @@ class SoilDataProviderNL_CWB(dict):
         # Critical air content as halfway between SMFCF and SM0
         CRAIRC = AWC0/self.rootable_depth * 0.5
 
-        self.update(dict(SWM=SMW, SMFCF=SMFCF, SM0=SM0, CRAIRC=CRAIRC, RDMSOL=self.rootable_depth))
+        self.update(dict(SMW=SMW, SMFCF=SMFCF, SM0=SM0, CRAIRC=CRAIRC, RDMSOL=self.rootable_depth))
 
     def _compute_CWB_conductivity_parameters(self):
         """Computes the soil conductivity parameters for the WOFOST classic waterbalance
@@ -145,8 +162,8 @@ class SoilDataProviderNL_CWB(dict):
         :return: a dict with relevant parameters
         """
         bottom_layer = self.profile_characteristics.iloc[-1]
-        p_mvg = MualemvanGenugten(wcr=bottom_layer.ores, wcs=bottom_layer.osat, alpha=bottom_layer.alfa,
-                                  npar=bottom_layer.npar, lamda=bottom_layer.lexp, ksat=bottom_layer.ksatfit)
+        p_mvg = MualemvanGenuchten(wcr=bottom_layer.ores, wcs=bottom_layer.osat, alpha=bottom_layer.alfa,
+                                   npar=bottom_layer.npar, lamda=bottom_layer.lexp, ksat=bottom_layer.ksatfit)
         pF = 1.0
         H = 10**pF
         cond = get_conductivity_from_MvG(H, p_mvg)
@@ -165,8 +182,8 @@ class SoilDataProviderNL_CWB(dict):
         H = 10**ref_point_pF
         layer_ref_points = []
         for layer in profile_characteristics.itertuples():
-            p_mvg = MualemvanGenugten(wcr=layer.ores, wcs=layer.osat, alpha=layer.alfa, npar=layer.npar,
-                                      lamda=layer.lexp, ksat=layer.ksatfit)
+            p_mvg = MualemvanGenuchten(wcr=layer.ores, wcs=layer.osat, alpha=layer.alfa, npar=layer.npar,
+                                       lamda=layer.lexp, ksat=layer.ksatfit)
             water_content = get_water_content_from_MvG(H, p_mvg)
             layer_ref_points.append(dict(zip(ref_point_names, water_content)))
         df_water_content = pd.DataFrame.from_dict(layer_ref_points)
@@ -196,7 +213,14 @@ class SoilDataProviderNL_CWB(dict):
         cursor = DBconn.execute(sql, (self.crds.xcoord, self.crds.ycoord))
         row = cursor.fetchone()
         if not row:
-            msg = f"No valid soil profile found for this location: (X:{self.crds.xcoord}, Y:{self.crds.ycoord})!"
+            msg = (f"No soil profile found for this location: (X:{self.crds.xcoord:.0f}, Y:{self.crds.ycoord:.0f})! "
+                   f"Is this location on land?")
+            raise RuntimeError(msg)
+
+        profile_code = row[0]
+        if profile_code in self.non_soil_codes:
+            msg = (f"Not a valid soil profile found for this location: (X:{self.crds.xcoord:.0f}, Y:{self.crds.ycoord:.0f})! "
+                   f"Probably an urban area, land fill or other location with no soil description!")
             raise RuntimeError(msg)
 
         return row[0]
@@ -227,11 +251,12 @@ class SoilDataProviderNL_CWB(dict):
         return df
 
     def __str__(self):
-        msg = f"Soil properties for location at X/Y: {self.crds.xcoord}/{self.crds.ycoord}\n"
+        msg = (f"Soil properties for location at X/Y: {self.crds.xcoord:.0f}/{self.crds.ycoord:.0f} - "
+               f"lon/lat: {self.crds.lon:.3f}/{self.crds.lat:.3f}\n")
         if self._root_depth_limit_forced:
-            msg += f"Soil rootable depth estimated at {self.rootable_depth} (forced by `max_root_depth` parameter)\n"
+            msg += f"Soil rootable depth estimated at {self.rootable_depth} cm (forced by `max_root_depth` parameter)\n"
         else:
-            msg += f"Soil rootable depth estimated at {self.rootable_depth} (from maximum soil profile depth)\n"
+            msg += f"Soil rootable depth estimated at {self.rootable_depth} cm (from maximum soil profile depth)\n"
         msg += "Soil profile characteristics:\n"
         s = self.profile_characteristics.to_string(index=False, columns=["thickness", "pclay", "psilt", "psand", "SMW",
                                                                          "SMFCF", "SM0"],
@@ -242,3 +267,27 @@ class SoilDataProviderNL_CWB(dict):
             unit = self.param_units[name]
             msg += f"- {name}: {value:.3f} {unit}\n"
         return msg
+
+
+class SoilDataProviderNL_MLWB(dict):
+    """A SoilDataProvider that retrieves soil parameters from the Dutch BOFEK soil database for use
+    with the PCSE multi-layered waterbalance.
+    """
+    non_soil_codes = {99980, 99990, 99991}
+
+    def __init__(self, *, xcoord=None, ycoord=None, max_root_depth=1E6, cache_soildb=False):
+        super().__init__()
+
+        raise NotImplementedError("Soil dataprovider for the multi-layer waterbalance not yet implemented.")
+
+
+class SoilDataProviderNL_MLWB_SNOMIN(dict):
+    """A SoilDataProvider that retrieves soil parameters from the Dutch BOFEK soil database for use
+    with the PCSE multi-layered waterbalance with SNOMIN C/N soil model.
+    """
+    non_soil_codes = {99980, 99990, 99991}
+
+    def __init__(self, *, xcoord=None, ycoord=None, max_root_depth=1E6, cache_soildb=False):
+        super().__init__()
+
+        raise NotImplementedError("Soil dataprovider for the multi-layer waterbalance and SNOMIN not yet implemented.")

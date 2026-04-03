@@ -1,3 +1,7 @@
+# -*- coding: utf-8 -*-
+# Copyright (c) 2026 Wageningen Environmental Research, Wageningen-UR
+# Allard de Wit (allard.dewit@wur.nl), April 2026
+# Mualem van Genuchten functions based on R code provided by Martin Mulder
 from dataclasses import dataclass
 # #' Get water content based on pressure head
 # #'
@@ -20,7 +24,7 @@ from dataclasses import dataclass
 #   return (wc)
 
 @dataclass()
-class MualemvanGenugten:
+class MualemvanGenuchten:
     wcr: float
     wcs:float
     alpha: float
