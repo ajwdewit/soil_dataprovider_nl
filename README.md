@@ -48,9 +48,9 @@ The package can be pip-installed from PyPI: `pip install soil_dataprovider_nl` s
 
 Using the soil dataprovider is easy:
 ```python
->> from soil_dataprovider_nl import SoilDataProviderNL_CWB
+>> from soil_dataprovider_nl import SoilDataProviderNL
 >> from pcse.models import Wofost72_WLP_CWB
->> soild = SoilDataProviderNL_CWB(Wofost72_WLP_CWB, xcoord=170342, ycoord=438503, cache_soildb=True)
+>> soild = SoilDataProviderNL(Wofost72_WLP_CWB, xcoord=170342, ycoord=438503, cache_soildb=True)
 >> print(soild)
 Soil properties for location at X/Y: 170342/438503 - lon/lat: 5.611/51.936
 Soil rootable depth estimated at 120 cm (from maximum soil profile depth)
