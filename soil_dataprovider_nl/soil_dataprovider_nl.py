@@ -125,7 +125,7 @@ class SoilDataProviderNL_CWB(dict):
         df["is_rooted"] = df.layer_top < self.rootable_depth
         if not df.is_rooted.all():
             df = df[df.is_rooted]
-        df.layer_bottom.iloc[-1] = self.rootable_depth
+        df.loc[len(df) - 1, 'layer_bottom'] = self.rootable_depth
 
         # Recompute layer thickness as bottom layer may be bounded by rootable depth.
         df["thickness"] = df.layer_bottom - df.layer_top
