@@ -4,6 +4,7 @@
 import urllib.request
 from pathlib import Path
 import tempfile
+import hashlib
 
 import pandas as pd
 pd.options.mode.chained_assignment = None
@@ -20,7 +21,10 @@ tmp_dir = Path(tempfile.gettempdir())
 
 
 class SoilBDconnector:
+    """Takes care of opening the connection to the duckdb file on github and manages the cached version of that file.
+    """
     bofek_soil_source = "https://github.com/ajwdewit/collections/raw/refs/heads/main/BodemkaartNL/bofek_soil_nl.ddb"
+    bofek_soil_source_shasum = "https://raw.githubusercontent.com/ajwdewit/collections/main/BodemkaartNL/bofek_soil_nl.shasum"
     bofek_soil_cache = tmp_dir / "bofek_soil_nl.ddb"
 
     def __init__(self, cache_soildb=False):
@@ -29,6 +33,12 @@ class SoilBDconnector:
             if not self.bofek_soil_cache.exists():
                 print("Downloading Soil DB (~135 Mb)...")
                 urllib.request.urlretrieve(self.bofek_soil_source, self.bofek_soil_cache)
+            else:
+                local_shasum = self._compute_cache_sha1()
+                upstream_shasum = self._get_upstream_sha1()
+                if local_shasum != upstream_shasum:
+                    print("Updating Soil DB (~135 Mb)...")
+                    urllib.request.urlretrieve(self.bofek_soil_source, self.bofek_soil_cache)
 
         self.connection = None
 
@@ -45,6 +55,28 @@ class SoilBDconnector:
     def __exit__(self, exc_type, exc_value, exc_traceback):
 
         self.connection.close()
+
+    def _compute_cache_sha1(self):
+        """Computes a SHA1 hash on the local cached DB file to check if the upstream DB has changed.
+        """
+        m = hashlib.sha1()
+        blocksize = 2 ** 20
+        with open(self.bofek_soil_cache, "rb") as fp:
+            while True:
+                buf = fp.read(blocksize)
+                if not buf:
+                    break
+                m.update(buf)
+
+        return m.hexdigest()
+
+    def _get_upstream_sha1(self):
+        """Downloads the SHA1 has from the database file on github.
+        """
+        request_url = urllib.request.urlopen(self.bofek_soil_source_shasum)
+        r = request_url.read()
+        hash_value = r.decode().split()[0]
+        return hash_value
 
 
 class SoilDataProviderNL_CWB(dict):
