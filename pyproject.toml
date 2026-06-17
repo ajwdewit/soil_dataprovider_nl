@@ -21,7 +21,8 @@ dependencies = [
     "pandas",
     "pyproj==3.7",
     "matplotlib",
-    "duckdb == 1.4"
+    "duckdb == 1.4",
+    "pcse"
 ]
 license = {file = "LICENSE"}
 classifiers = [
