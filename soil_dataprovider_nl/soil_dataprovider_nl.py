@@ -5,48 +5,157 @@ import urllib.request
 from pathlib import Path
 import tempfile
 import hashlib
+from types import SimpleNamespace
 
 import pandas as pd
 pd.options.mode.chained_assignment = None
-import matplotlib.pyplot as plt
 import duckdb
 import numpy as np
 
 from .coords import CoordinateStore
 from .mualemvangenuchten import MualemvanGenuchten, get_water_content_from_MvG, get_conductivity_from_MvG
+non_soil_codes = {99980, 99990, 99991}
 
 this_dir = Path(__file__).parent
 top_dir = this_dir.parent.absolute()
 tmp_dir = Path(tempfile.gettempdir())
 
 
+def plot_pF_curves(pF_results, fname_figure=None):
+    """Plots the pF curves based on input  from the function `compute_pF_curves`
+
+    :param pF_results: the pF results from the function `compute_pF_curves`
+    :param fname_figure: optionally the file name where the figure will be written. Output format
+        will be derived from the filename extension png|jpg|etc.
+    :return: a matplotlib figure and axes
+    """
+
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError as e:
+        msg = "Install matplotlib for generating figures"
+        print(msg)
+        return None
+
+    fig, axes = plt.subplots(ncols=2, figsize=(10, 5))
+    for layer in pF_results:
+        label = f"layer {layer.layer_top}-{layer.layer_bottom}"
+        axes[0].plot(layer.pF_range, layer.pF_WC, label=label)
+        axes[1].plot(layer.pF_range, layer.pF_Cond, label=label)
+
+    axes[0].legend()
+    axes[0].set_xlabel("pF value")
+    axes[0].set_ylabel("Soil moisture content [-]")
+    axes[1].set_xlabel("pF value")
+    axes[1].set_ylabel("Soil conductivity [cm/day]")
+    fig.suptitle("PF curves")
+    if fname_figure is not None:
+        fig.savefig(fname_figure)
+
+    return fig, axes
+
+
+def compute_pF_curves(profile_characteristics):
+    """Computes the pF curves for water retention and conductivey for all layeres in the profile
+
+    :param profile_characteristics: the profile characteristics from BOFEK
+    :return: a list the dicts containing the pF curves and additional info for each layer.
+    """
+
+    pF_range = np.arange(-1.0, 7.1, 0.1)
+    H = 10 ** pF_range
+    pF_results = []
+    for row in profile_characteristics.itertuples():
+        p_mvg = MualemvanGenuchten(wcr=row.ores, wcs=row.osat, alpha=row.alfa, npar=row.npar,
+                                   lamda=row.lexp, ksat=row.ksatfit)
+        pF_WC = get_water_content_from_MvG(H, p_mvg)
+        pF_Cond = get_conductivity_from_MvG(H, p_mvg)
+        pF_results.append(SimpleNamespace(idlayer=row.idlayer, pF_WC=pF_WC,pF_Cond=pF_Cond,
+                                          layer_top=row.layer_top, layer_bottom=row.layer_bottom,
+                                          pF_range=pF_range))
+
+    return pF_results
+
+
+def find_profile_characteristics(DBconn, profile_code):
+    """Reads the soil profile characteristics from the database
+
+    :param profile_code: the profile code
+    :return: a dataframe with soil profile characteristics
+    """
+    sql = """SELECT t1.*, t2.* 
+             FROM 
+                 soildb.soil_profiles t1 
+               INNER JOIN 
+                 soildb.soil_physical_description t2 ON t1.soil_physical_code=t2.soil_physical_code
+            WHERE
+               t1.profile_code = ?
+            ORDER BY
+               t1.idlayer
+        """
+    df = DBconn.execute(sql, (profile_code,)).df()
+    if len(df) == 0:
+        msg = f"No valid soil profile description found for this soil profile code: {profile_code})!"
+        raise RuntimeError(msg)
+
+    df["thickness"] = df.layer_bottom - df.layer_top
+
+    return df
+
+
+def find_soil_profile(DBconn, coords):
+    sql = """SELECT profile_code FROM soildb.bofek_soil_nl t1
+             WHERE ST_intersects(t1.geom, ST_Point(?, ?))
+          """
+
+    cursor = DBconn.execute(sql, (coords.xcoord, coords.ycoord))
+    row = cursor.fetchone()
+    if not row:
+        msg = (f"No soil profile found for this location: (X:{coords.xcoord:.0f}, Y:{coords.ycoord:.0f})! "
+               f"Is this location on land?")
+        raise RuntimeError(msg)
+
+    profile_code = row[0]
+    if profile_code in non_soil_codes:
+        msg = (f"Not a valid soil profile found for this location: (X:{coords.xcoord:.0f}, Y:{coords.ycoord:.0f})! "
+               f"Probably an urban area, land fill or other location with no soil description!")
+        raise RuntimeError(msg)
+
+    return row[0]
+
+
 class SoilBDconnector:
     """Takes care of opening the connection to the duckdb file on github and manages the cached version of that file.
     """
-    bofek_soil_source = "https://github.com/ajwdewit/collections/raw/refs/heads/main/BodemkaartNL/bofek_soil_nl.ddb"
-    bofek_soil_source_shasum = "https://raw.githubusercontent.com/ajwdewit/collections/main/BodemkaartNL/bofek_soil_nl.shasum"
-    bofek_soil_cache = tmp_dir / "bofek_soil_nl.ddb"
+    _bofek_soil_source = "https://github.com/ajwdewit/collections/raw/refs/heads/main/BodemkaartNL/bofek_soil_nl.ddb"
+    _bofek_soil_source_shasum = "https://raw.githubusercontent.com/ajwdewit/collections/main/BodemkaartNL/bofek_soil_nl.shasum"
+    _bofek_soil_cache = tmp_dir / "bofek_soil_nl.ddb"
+    _upstream_shasum = None
 
-    def __init__(self, cache_soildb=False):
-        self._cache_soildb = cache_soildb
-        if self._cache_soildb:
-            if not self.bofek_soil_cache.exists():
-                print("Downloading Soil DB (~135 Mb)...")
-                urllib.request.urlretrieve(self.bofek_soil_source, self.bofek_soil_cache)
+    def __init__(self):
+        connected = self._has_connection()
+        if not connected:
+            msg = "No internet connection to retrieve BOFEK soildb and compare DB checksum!"
+            raise RuntimeError(msg)
+
+        if not self._bofek_soil_cache.exists():
+            print("Downloading Soil DB (~135 Mb)...")
+            urllib.request.urlretrieve(self._bofek_soil_source, self._bofek_soil_cache)
+        else:
+            local_shasum = self._compute_cache_sha1()
+            if local_shasum != self._upstream_shasum:
+                print("Updating Soil DB (~135 Mb)...")
+                urllib.request.urlretrieve(self._bofek_soil_source, self._bofek_soil_cache)
             else:
-                local_shasum = self._compute_cache_sha1()
-                upstream_shasum = self._get_upstream_sha1()
-                if local_shasum != upstream_shasum:
-                    print("Updating Soil DB (~135 Mb)...")
-                    urllib.request.urlretrieve(self.bofek_soil_source, self.bofek_soil_cache)
+                print(f"Found soil DB at {self._bofek_soil_cache}")
 
         self.connection = None
 
+
     def __enter__(self):
 
-        soildb = self.bofek_soil_cache if self._cache_soildb else self.bofek_soil_source
         sql1 = "install spatial; load spatial; install httpfs; load httpfs;"
-        sql2 = f"attach '{soildb}' as soildb (READONLY)"
+        sql2 = f"attach '{self._bofek_soil_cache}' as soildb (READONLY)"
         self.connection = duckdb.connect()
         self.connection.sql(sql1)
         self.connection.sql(sql2)
@@ -56,24 +165,38 @@ class SoilBDconnector:
 
         self.connection.close()
 
+    def _has_connection(self):
+        try:
+            self._upstream_shasum =  self._get_upstream_sha1()
+            return True
+        except urllib.error.URLError as e:
+            return False
+
     def _compute_cache_sha1(self):
         """Computes a SHA1 hash on the local cached DB file to check if the upstream DB has changed.
         """
+        fname_hash = self._bofek_soil_cache.with_suffix(".sha1")
+        if fname_hash.exists():
+            return open(fname_hash, "r").read()
+
         m = hashlib.sha1()
         blocksize = 2 ** 20
-        with open(self.bofek_soil_cache, "rb") as fp:
+        with open(self._bofek_soil_cache, "rb") as fp:
             while True:
                 buf = fp.read(blocksize)
                 if not buf:
                     break
                 m.update(buf)
 
+        with open(fname_hash, "w") as fp:
+            fp.write(m.hexdigest())
+
         return m.hexdigest()
 
     def _get_upstream_sha1(self):
         """Downloads the SHA1 has from the database file on github.
         """
-        request_url = urllib.request.urlopen(self.bofek_soil_source_shasum)
+        request_url = urllib.request.urlopen(self._bofek_soil_source_shasum)
         r = request_url.read()
         hash_value = r.decode().split()[0]
         return hash_value
@@ -86,7 +209,6 @@ class SoilDataProviderNL_CWB(dict):
     :param xcoord: the X coordinate. Either in Dutch RD coordinates or as longitude
     :param ycoord: the Y coordinates. Either in Dutch RD coordinates or as latitude
     :param max_root_depth: user defined rootable depth in cm, otherwise the whole soil is assumed rootable.
-    :param cache_soildb: set to True to download the soil database file and store a local cached copy of it.
 
     Since the classic water balance uses a single soil layer, the soil parameters for each layer
     have to be aggregated. The following assumptions have been made:
@@ -101,7 +223,7 @@ class SoilDataProviderNL_CWB(dict):
     - RDMSOL is derived from the maximum soil depth or from the user-defined max_root_depth. The smallest of the
       two values is taken.
     """
-    non_soil_codes = {99980, 99990, 99991}
+
     param_units = {"SMW": "[-]",
                    "SMFCF": "[-]",
                    "SM0": "[-]",
@@ -111,40 +233,18 @@ class SoilDataProviderNL_CWB(dict):
                    "KSUB": "[cm day-1]",
                    }
 
-    def __init__(self, *, xcoord=None, ycoord=None, max_root_depth=1E6, cache_soildb=False):
+    def __init__(self, *, xcoord=None, ycoord=None, max_root_depth=1E6):
         super().__init__()
 
         self.crds = CoordinateStore(xcoord, ycoord)
-        with SoilBDconnector(cache_soildb=cache_soildb) as DBconn:
-            self.soil_profile = self._find_soil_profile(DBconn)
-            profile_characteristics = self._find_profile_characteristics(DBconn, self.soil_profile)
+        with SoilBDconnector() as DBconn:
+            self.soil_profile = find_soil_profile(DBconn, self.crds)
+            profile_characteristics = find_profile_characteristics(DBconn, self.soil_profile)
 
-        # self._compute_pF_curves(self.profile_characteristics)
-        self.profile_characteristics = self._compute_water_content_at_referencepoints(profile_characteristics)
+        self.profile_characteristics = self._add_water_content_at_referencepoints(profile_characteristics)
         self.rootable_depth, self._root_depth_limit_forced = self._determine_rootable_depth(max_root_depth)
         self._compute_CWB_volumetric_parameters()
         self._compute_CWB_conductivity_parameters()
-
-    def _compute_pF_curves(self, profile_characteristics):
-        pF_range = np.arange(-1.0, 7.1, 0.1)
-        H = 10**pF_range
-        fig, axes = plt.subplots(ncols=2, figsize=(10,5))
-        for row in profile_characteristics.itertuples():
-            p_mvg = MualemvanGenuchten(wcr=row.ores, wcs=row.osat, alpha=row.alfa, npar=row.npar,
-                                       lamda=row.lexp, ksat=row.ksatfit)
-            pF_WC = get_water_content_from_MvG(H, p_mvg)
-            pF_Cond = get_conductivity_from_MvG(H, p_mvg)
-            label = f"layer {row.layer_top}-{row.layer_bottom}"
-            axes[0].plot(pF_range, pF_WC, label=label)
-            axes[1].plot(pF_range, pF_Cond, label=label)
-
-        axes[0].legend()
-        axes[0].set_xlabel("pF value")
-        axes[0].set_ylabel("Soil moisture content [-]")
-        axes[1].set_xlabel("pF value")
-        axes[1].set_ylabel("Soil conductivity [cm/day]")
-        fig.suptitle("PF curves")
-        fig.savefig(top_dir / "profile_curves.png")
 
     def _compute_CWB_volumetric_parameters(self):
         """Computes the soil volumetric parameters for the WOFOST classic waterbalance as layer-weighted values
@@ -180,11 +280,11 @@ class SoilDataProviderNL_CWB(dict):
     def _compute_CWB_conductivity_parameters(self):
         """Computes the soil conductivity parameters for the WOFOST classic waterbalance
 
-        The are three parameters in WOFOST CWB that have to be estimated:
+        There are three parameters in WOFOST CWB that have to be estimated:
         - SOPE : maximum percolation rate root zone[cm day-1]
         - KSUB : maximum percolation rate subsoil [cm day-1]
 
-        It is unclear how this parameters have to be estimated physically. In practice they
+        It is unclear how this parameters have to be estimated physically. In practice, they
         were probably used as a calibration parameter in order to limit excessive drainage.
         In the classic water balance drainage occurs only when soil moisture is above
         field capacity (pF=2.0), therefore we estimate both parameters as the conducitivity
@@ -201,12 +301,12 @@ class SoilDataProviderNL_CWB(dict):
         cond = get_conductivity_from_MvG(H, p_mvg)
         self.update(dict(SOPE=cond, KSUB=cond))
 
-    def _compute_water_content_at_referencepoints(self, profile_characteristics):
+    def _add_water_content_at_referencepoints(self, profile_characteristics):
         """Computes the water content at saturation, field capacity and wilting point based on the profile
         characteristics and the Mualem van Genugten parameters.
 
         :param profile_characteristics: a dataframe with soil profile characteristics
-        :return: The updated dataframe with soil profile characteristics
+        :return: The updated dataframe with water content at reference points added.
         """
 
         ref_point_names = ["SM0", "SMFCF", "SMW"]
@@ -236,51 +336,6 @@ class SoilDataProviderNL_CWB(dict):
             return rootable_depth, True
         else:
             return rootable_depth, False
-
-    def _find_soil_profile(self, DBconn):
-        sql = """SELECT profile_code FROM soildb.bofek_soil_nl t1
-                 WHERE ST_intersects(t1.geom, ST_Point(?, ?))
-              """
-
-        cursor = DBconn.execute(sql, (self.crds.xcoord, self.crds.ycoord))
-        row = cursor.fetchone()
-        if not row:
-            msg = (f"No soil profile found for this location: (X:{self.crds.xcoord:.0f}, Y:{self.crds.ycoord:.0f})! "
-                   f"Is this location on land?")
-            raise RuntimeError(msg)
-
-        profile_code = row[0]
-        if profile_code in self.non_soil_codes:
-            msg = (f"Not a valid soil profile found for this location: (X:{self.crds.xcoord:.0f}, Y:{self.crds.ycoord:.0f})! "
-                   f"Probably an urban area, land fill or other location with no soil description!")
-            raise RuntimeError(msg)
-
-        return row[0]
-
-    def _find_profile_characteristics(self, DBconn, profile_code):
-        """Reads the soil profile characteristics from the database
-
-        :param profile_code: the profile code
-        :return: a dataframe with soil profile characteristics
-        """
-        sql = """SELECT t1.*, t2.* 
-                 FROM 
-                     soildb.soil_profiles t1 
-                   INNER JOIN 
-                     soildb.soil_physical_description t2 ON t1.soil_physical_code=t2.soil_physical_code
-                WHERE
-                   t1.profile_code = ?
-                ORDER BY
-                   t1.idlayer
-            """
-        df = DBconn.execute(sql, (profile_code,)).df()
-        if len(df) == 0:
-            msg = f"No valid soil profile description found for this soil profile code: {profile_code})!"
-            raise RuntimeError(msg)
-
-        df["thickness"] = df.layer_bottom - df.layer_top
-
-        return df
 
     def __str__(self):
         msg = (f"Soil properties for location at X/Y: {self.crds.xcoord:.0f}/{self.crds.ycoord:.0f} - "

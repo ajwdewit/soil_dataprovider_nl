@@ -4,6 +4,14 @@
 import pyproj
 
 class CoordinateStore:
+    """This class stores the coordinates and provides several function
+    - It determines if provided coordinates are lat/lon or Dutch RD-stelsel coordinates.
+    - Converts RD to lat/lon and vice versa
+    - It checks if the coordinates are within the boundinng box for NL
+
+    self.xcoord, self.ycoord provide the coordinates Dutch RD-stelsel coordinates
+    self.lon, self.lat provide the coordinates in longitude/latitude
+    """
     rd_stelsel = "epsg:7415"
 
     def __init__(self, x, y):

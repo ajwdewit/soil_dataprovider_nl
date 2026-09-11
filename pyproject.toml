@@ -20,9 +20,11 @@ requires-python = ">=3.10"
 dependencies = [
     "pandas",
     "pyproj==3.7",
-    "matplotlib",
-    "duckdb == 1.4"
+    "duckdb == 1.5",
 ]
+[project.optional-dependencies]
+plot = ["matplotlib"]
+
 license = {file = "LICENSE"}
 classifiers = [
     "Programming Language :: Python :: 3",
