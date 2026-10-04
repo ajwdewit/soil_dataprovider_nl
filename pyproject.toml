@@ -34,3 +34,9 @@ notebook = ["matplotlib", "ipyleaflet", "pcse>=6.0.13"]
 Homepage = "https://github.com/ajwdewit/soil_dataprovider_nl"
 documentation = "https://github.com/ajwdewit/soil_dataprovider_nl"
 repository = "https://github.com/ajwdewit/soil_dataprovider_nl"
+
+[[tool.uv.index]]
+name = "testpypi"
+url = "https://test.pypi.org/simple/"
+publish-url = "https://test.pypi.org/legacy/"
+explicit = true

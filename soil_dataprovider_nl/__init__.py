@@ -1,7 +1,10 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2026 Wageningen Environmental Research, Wageningen-UR
 # Allard de Wit (allard.dewit@wur.nl), April 2026
-from .soil_dataprovider_nl import SoilDataProviderNL_CWB, SoilDataProviderNL_MLWB, SoilDataProviderNL_MLWB_SNOMIN
+from .soil_dataprovider_nl import (
+    SoilDataProviderNL_CWB,
+    SoilDataProviderNL_MLWB,
+    SoilDataProviderNL_MLWB_SNOMIN,
+)
 
 __version__ = "1.0.0"
 

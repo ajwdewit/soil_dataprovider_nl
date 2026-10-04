@@ -1,7 +1,7 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2026 Wageningen Environmental Research, Wageningen-UR
 # Allard de Wit (allard.dewit@wur.nl), April 2026
 import pyproj
+
 
 class CoordinateStore:
     """This class stores the coordinates and provides several function
@@ -26,7 +26,7 @@ class CoordinateStore:
             self.lat = y
             self.xcoord, self.ycoord = self.from_lonlat(x, y)
         else:
-            raise ValueError(f"Coordinates out of bounding box. Did you swap longitude/latitude?")
+            raise ValueError("Coordinates out of bounding box. Did you swap longitude/latitude?")
 
     def from_RD(self, x, y):
         return self._conv(x, y, inverse=True)

@@ -1,19 +1,24 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2026 Wageningen Environmental Research, Wageningen-UR
 # Allard de Wit (allard.dewit@wur.nl), April 2026
+import hashlib
+import tempfile
 import urllib.request
 from pathlib import Path
-import tempfile
-import hashlib
 from types import SimpleNamespace
 
 import pandas as pd
+
 pd.options.mode.chained_assignment = None
 import duckdb
 import numpy as np
 
 from .coords import CoordinateStore
-from .mualemvangenuchten import MualemvanGenuchten, get_water_content_from_MvG, get_conductivity_from_MvG
+from .mualemvangenuchten import (
+    MualemvanGenuchten,
+    get_conductivity_from_MvG,
+    get_water_content_from_MvG,
+)
+
 non_soil_codes = {99980, 99990, 99991}
 
 this_dir = Path(__file__).parent
@@ -32,7 +37,7 @@ def plot_pF_curves(pF_results, fname_figure=None):
 
     try:
         import matplotlib.pyplot as plt
-    except ImportError as e:
+    except ImportError:
         msg = "Install matplotlib for generating figures"
         print(msg)
         return None
@@ -176,7 +181,7 @@ class SoilBDconnector:
         try:
             self._upstream_shasum =  self._get_upstream_sha1()
             return True
-        except urllib.error.URLError as e:
+        except urllib.error.URLError:
             return False
 
     def _compute_cache_sha1(self):
@@ -361,7 +366,7 @@ class SoilDataProviderNL_CWB(dict):
                                                                          "SMFCF", "SM0"],
                                                    max_rows=5)
         msg += (s + "\n")
-        msg += f"Actual CWB parameter values:\n"
+        msg += "Actual CWB parameter values:\n"
         for name, value in self.items():
             unit = self.param_units[name]
             msg += f"- {name}: {value:.3f} {unit}\n"
