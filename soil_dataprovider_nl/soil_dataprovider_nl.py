@@ -88,9 +88,9 @@ def find_profile_characteristics(DBconn, profile_code):
                  soildb.soil_profiles t1 
                INNER JOIN 
                  soildb.soil_physical_description t2 ON t1.soil_physical_code=t2.soil_physical_code
-            WHERE
+             WHERE
                t1.profile_code = ?
-            ORDER BY
+             ORDER BY
                t1.idlayer
         """
     df = DBconn.execute(sql, (profile_code,)).df()
@@ -104,6 +104,12 @@ def find_profile_characteristics(DBconn, profile_code):
 
 
 def find_soil_profile(DBconn, coords):
+    """Find the soil profile code based on given coordinates
+
+    :param DBconn: The database connection
+    :param coords: the coordinates in Dutch RD system.
+    :return: a profile code for the soil (integer)
+    """
     sql = """SELECT profile_code FROM soildb.bofek_soil_nl t1
              WHERE ST_intersects(t1.geom, ST_Point(?, ?))
           """
@@ -121,7 +127,7 @@ def find_soil_profile(DBconn, coords):
                f"Probably an urban area, land fill or other location with no soil description!")
         raise RuntimeError(msg)
 
-    return row[0]
+    return profile_code
 
 
 class SoilBDconnector:
@@ -151,7 +157,6 @@ class SoilBDconnector:
 
         self.connection = None
 
-
     def __enter__(self):
 
         sql1 = "install spatial; load spatial; install httpfs; load httpfs;"
@@ -166,6 +171,8 @@ class SoilBDconnector:
         self.connection.close()
 
     def _has_connection(self):
+        """Checks the connection by trying to download the database SHA1 checksum from github.
+        """
         try:
             self._upstream_shasum =  self._get_upstream_sha1()
             return True
@@ -236,6 +243,11 @@ class SoilDataProviderNL_CWB(dict):
     def __init__(self, *, xcoord=None, ycoord=None, max_root_depth=1E6):
         super().__init__()
 
+        if max_root_depth < 0:
+            raise RuntimeError("max_root_depth must be positive")
+        if max_root_depth < 20:
+            raise RuntimeError("max_root_depth must at least be than 20 [cm]")
+
         self.crds = CoordinateStore(xcoord, ycoord)
         with SoilBDconnector() as DBconn:
             self.soil_profile = find_soil_profile(DBconn, self.crds)
@@ -257,7 +269,7 @@ class SoilDataProviderNL_CWB(dict):
         df["is_rooted"] = df.layer_top < self.rootable_depth
         if not df.is_rooted.all():
             df = df[df.is_rooted]
-        df.layer_bottom.iloc[-1] = self.rootable_depth
+        df.loc[df.index[-1], 'layer_bottom'] = self.rootable_depth
 
         # Recompute layer thickness as bottom layer may be bounded by rootable depth.
         df["thickness"] = df.layer_bottom - df.layer_top
@@ -268,10 +280,10 @@ class SoilDataProviderNL_CWB(dict):
         AWC = ((df.SMFCF - df.SMW) * df.thickness).sum()
         # Recomputed field capacity as required to store AWC above wilting point SMW
         SMFCF = SMW + AWC/self.rootable_depth
-        # pore space above field capacity (AWC0)
-        AWC0 = ((df.SM0 - df.SMFCF) * df.thickness).sum()
+        # pore space up till porosity (AWC0)
+        AWC0 = ((df.SM0 - df.SMW) * df.thickness).sum()
         # Recompute soil porosity (SM0) as required to store AWC0 above field capacity
-        SM0 = SMFCF + AWC0/self.rootable_depth
+        SM0 = SMW + AWC0/self.rootable_depth
         # Critical air content as halfway between SMFCF and SM0
         CRAIRC = AWC0/self.rootable_depth * 0.5
 

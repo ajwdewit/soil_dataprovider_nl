@@ -10,9 +10,11 @@ name = "soil_dataprovider_nl"
 version = "1.0.0"
 authors = [
   { name="Allard de Wit", email="allard.dewit@wur.nl" },
+  { name="Herman Berghuijs", email="herman.berghuijs@wur.nl" },
 ]
 maintainers = [
   { name="Allard de Wit", email="allard.dewit@wur.nl" },
+  { name="Herman Berghuijs", email="herman.berghuijs@wur.nl" },
 ]
 description = "This package provides a set of data providers that can derive the soil parameters for running crop/soil models in PCSE based on the Dutch soil map."
 readme = "README.md"
@@ -22,15 +24,11 @@ dependencies = [
     "pyproj==3.7",
     "duckdb == 1.5",
 ]
-[project.optional-dependencies]
-plot = ["matplotlib"]
+license = "EUPL-1.2"
+license-files = ["LICENSE"]
 
-license = {file = "LICENSE"}
-classifiers = [
-    "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: EUPL License",
-    "Operating System :: OS Independent",
-]
+[project.optional-dependencies]
+notebook = ["matplotlib", "ipyleaflet", "pcse>=6.0.13"]
 
 [project.urls]
 Homepage = "https://github.com/ajwdewit/soil_dataprovider_nl"

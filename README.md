@@ -3,7 +3,7 @@
 ---
 Allard de Wit  
 Wageningen Environmental Research  
-April 2026  
+September 2026  
 ---
 
 This package provides a set of data providers that can provide the soil parameters for the Netherlands as input
@@ -34,15 +34,18 @@ to `soil_dataprovider_nl.SoilDataProviderNL`, however they can also be imported 
 This package has been developed using python 3.10 and has dependencies on several other packages:
 - pandas
 - numpy
-- duckdb == 1.4
+- duckdb == 1.5
 - matplotlib
 - pyproj == 3.7
 
-These should be automatically downloaded and installed during installing the package.
 
 ## Installing
 
 The package can be pip-installed from PyPI: `pip install soil_dataprovider_nl` should be sufficient.
+
+Dependencies should be automatically downloaded and installed during installing the package, although the `pyproj` dependency
+can be problematic sometimes. In that case, install `pyproj` manually in a conda environment with the conda package
+manager.
 
 ## Usage
 
