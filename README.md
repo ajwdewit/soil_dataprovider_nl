@@ -53,7 +53,7 @@ Using the soil dataprovider is easy:
 ```python
 >> from soil_dataprovider_nl import SoilDataProviderNL
 >> from pcse.models import Wofost72_WLP_CWB
->> soild = SoilDataProviderNL(Wofost72_WLP_CWB, xcoord=170342, ycoord=438503, cache_soildb=True)
+>> soild = SoilDataProviderNL(Wofost72_WLP_CWB, xcoord=170342, ycoord=438503)
 >> print(soild)
 Soil properties for location at X/Y: 170342/438503 - lon/lat: 5.611/51.936
 Soil rootable depth estimated at 120 cm (from maximum soil profile depth)
