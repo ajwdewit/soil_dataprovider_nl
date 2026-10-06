@@ -18,10 +18,10 @@ maintainers = [
 ]
 description = "This package provides a set of data providers that can derive the soil parameters for running crop/soil models in PCSE based on the Dutch soil map."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
     "pandas",
-    "pyproj==3.7",
+    "pyproj==3.8",
     "duckdb == 1.5",
 ]
 license = "EUPL-1.2"

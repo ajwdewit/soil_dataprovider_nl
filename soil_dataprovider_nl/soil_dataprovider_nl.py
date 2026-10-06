@@ -290,7 +290,7 @@ class SoilDataProviderNL_CWB(dict):
         # Recompute soil porosity (SM0) as required to store AWC0 above field capacity
         SM0 = SMW + AWC0/self.rootable_depth
         # Critical air content as halfway between SMFCF and SM0
-        CRAIRC = AWC0/self.rootable_depth * 0.5
+        CRAIRC = (SM0 - SMFCF) * 0.5
 
         self.update(dict(SMW=SMW, SMFCF=SMFCF, SM0=SM0, CRAIRC=CRAIRC, RDMSOL=self.rootable_depth))
 
